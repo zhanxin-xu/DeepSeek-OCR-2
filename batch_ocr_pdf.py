@@ -1,38 +1,41 @@
+```python
 import os
 import glob
 import time
 import json
+import argparse
 import torch
 import fitz  # PyMuPDF
 from transformers import AutoModel, AutoTokenizer
 
 # Configuration
+# Configuration
 DATA_DIR = os.path.abspath('data')
 OUTPUT_DIR = os.path.abspath('output')
 MODEL_NAME = 'deepseek-ai/DeepSeek-OCR-2'
 
-# Ensure CUDA is available
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-
 def setup_model():
-    print("Loading DeepSeek-OCR-2 model with SDPA...")
+    print("Loading DeepSeek-OCR-2 model...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-        # Using 'eager' as recommended by the error message when SDPA isn't fully supported by the wrapper
+        # 使用 Flash Attention 2 加速推理
+        # 优化：直接在 GPU 上以 bfloat16 加载，避免 CPU->GPU 的转换开销和警告
         model = AutoModel.from_pretrained(
             MODEL_NAME, 
-            attn_implementation='eager', 
+            attn_implementation='flash_attention_2', 
             trust_remote_code=True, 
-            use_safetensors=True
+            use_safetensors=True,
+            torch_dtype=torch.bfloat16,
+            device_map="cuda"
         )
-        model = model.eval().cuda().to(torch.bfloat16)
+        model = model.eval()
         print("Model loaded successfully.")
         return tokenizer, model
     except Exception as e:
         print(f"Failed to load model: {e}")
         exit(1)
 
-def process_pdf(pdf_path, tokenizer, model):
+def process_pdf(pdf_path, tokenizer, model, max_pages=None):
     pdf_name = os.path.splitext(os.path.basename(pdf_path))[0]
     # Root output directory for this PDF
     pdf_root_dir = os.path.join(OUTPUT_DIR, pdf_name)
@@ -62,10 +65,14 @@ def process_pdf(pdf_path, tokenizer, model):
     }
     
     print(f"Total pages: {total_pages}")
+    if max_pages:
+        print(f"Test mode active: processing first {max_pages} pages only.")
     
     pdf_start_time = time.time()
     
     for i, page in enumerate(doc):
+        if max_pages is not None and i >= max_pages:
+            break
         page_num = i + 1
         
         # Create a dedicated directory for this page
@@ -155,6 +162,10 @@ def process_pdf(pdf_path, tokenizer, model):
     print("-" * 50)
 
 def main():
+    parser = argparse.ArgumentParser(description="Batch OCR PDF processing")
+    parser.add_argument("--max_pages", type=int, default=None, help="Maximum number of pages to process per PDF. If not set, process all pages.")
+    args = parser.parse_args()
+
     if not os.path.exists(DATA_DIR):
         print(f"Error: Data directory '{DATA_DIR}' does not exist.")
         return
@@ -171,10 +182,11 @@ def main():
     tokenizer, model = setup_model()
     
     for pdf_file in pdf_files:
-        process_process(pdf_file, tokenizer, model)
+        process_process(pdf_file, tokenizer, model, args.max_pages)
 
-def process_process(pdf_file, tokenizer, model):
-     process_pdf(pdf_file, tokenizer, model)
+def process_process(pdf_file, tokenizer, model, max_pages=None):
+     process_pdf(pdf_file, tokenizer, model, max_pages)
 
 if __name__ == "__main__":
     main()
+```
